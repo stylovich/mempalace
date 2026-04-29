@@ -91,6 +91,28 @@ def test_chroma_collection_returns_typed_query_result():
     assert result.embeddings is None
 
 
+def test_chroma_collection_uses_embed_query_when_available():
+    class QueryEmbeddingFunction:
+        def __init__(self):
+            self.inputs = None
+
+        def embed_query(self, texts):
+            self.inputs = texts
+            return [[0.1, 0.2] for _ in texts]
+
+    fake = _FakeCollection()
+    ef = QueryEmbeddingFunction()
+    collection = ChromaCollection(fake, embedding_function=ef)
+
+    collection.query(query_texts=["q"])
+
+    kind, kwargs = fake.calls[0]
+    assert kind == "query"
+    assert ef.inputs == ["q"]
+    assert "query_texts" not in kwargs
+    assert kwargs["query_embeddings"] == [[0.1, 0.2]]
+
+
 def test_chroma_collection_returns_typed_get_result():
     fake = _FakeCollection()
     collection = ChromaCollection(fake)

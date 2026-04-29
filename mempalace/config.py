@@ -644,11 +644,13 @@ class MempalaceConfig:
         """Embedding model identifier.
 
         Values: ``"minilm"`` (ChromaDB's all-MiniLM-L6-v2 — English-only),
-        ``"embeddinggemma"`` (multilingual, 100+ languages, default for
-        new installs since onboarding writes the choice). Read from env
-        ``MEMPALACE_EMBEDDING_MODEL`` first, then ``embedding_model`` in
-        ``config.json``, then ``"minilm"`` as a back-compat fallback for
-        palaces created before onboarding asked the question.
+        ``"embeddinggemma"`` (multilingual, 100+ languages, default for new
+        installs since onboarding writes the choice), or a Hugging Face /
+        SentenceTransformer model id such as ``"Qwen/Qwen3-Embedding-0.6B"``.
+        Read from env ``MEMPALACE_EMBEDDING_MODEL`` first, then
+        ``embedding_model`` in ``config.json``, then ``"minilm"`` as a
+        back-compat fallback for palaces created before onboarding asked the
+        question.
 
         Switching models on an existing palace requires re-embedding
         (different vector space) — ChromaDB rejects reads when the persisted
@@ -656,9 +658,19 @@ class MempalaceConfig:
         changing this value.
         """
         env_val = os.environ.get("MEMPALACE_EMBEDDING_MODEL")
-        if env_val:
-            return env_val.strip().lower()
-        return str(self._file_config.get("embedding_model", "minilm")).strip().lower()
+        raw = env_val if env_val else self._file_config.get("embedding_model", "minilm")
+        model = str(raw).strip()
+        known = {
+            "",
+            "default",
+            "minilm",
+            "onnx",
+            "all-minilm-l6-v2",
+            "all_minilm_l6_v2",
+            "onnx_mini_lm_l6_v2",
+            "embeddinggemma",
+        }
+        return model.lower() if model.lower() in known else model
 
     @property
     def embedding_threads(self) -> int:
@@ -694,12 +706,14 @@ class MempalaceConfig:
     def set_embedding_model(self, model: str) -> None:
         """Persist the embedding-model choice to ``config.json``.
 
-        Onboarding calls this once on first run. Accepts ``"minilm"`` or
-        ``"embeddinggemma"``; other values are normalized to lowercase and
-        passed through (``embedding.get_embedding_function`` falls back to
-        minilm for unrecognized values).
+        Onboarding calls this once on first run. Known built-in aliases are
+        normalized to lowercase; custom Hugging Face model ids keep their
+        original case.
         """
-        self._file_config["embedding_model"] = str(model).strip().lower()
+        normalized = str(model).strip()
+        if normalized.lower() in {"default", "minilm", "embeddinggemma"}:
+            normalized = normalized.lower()
+        self._file_config["embedding_model"] = normalized
         self._config_dir.mkdir(parents=True, exist_ok=True)
         try:
             with open(self._config_file, "w", encoding="utf-8") as f:
@@ -728,6 +742,33 @@ class MempalaceConfig:
             self._config_file.chmod(0o600)
         except (OSError, NotImplementedError):
             pass
+
+    @property
+    def embedding_dimension(self):
+        """Optional output dimension for Matryoshka-style embedding models."""
+        env_val = os.environ.get("MEMPALACE_EMBEDDING_DIMENSION")
+        raw = env_val if env_val else self._file_config.get("embedding_dimension")
+        if raw in (None, "", 0, "0"):
+            return None
+        try:
+            parsed = int(raw)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
+
+    @property
+    def embedding_query_instruction(self):
+        """Instruction prepended to retrieval queries for instruct models."""
+        env_val = os.environ.get("MEMPALACE_EMBEDDING_QUERY_INSTRUCTION")
+        if env_val is not None:
+            return env_val.strip()
+        return str(
+            self._file_config.get(
+                "embedding_query_instruction",
+                "Given a memory search query, retrieve relevant saved memories, "
+                "project decisions, code context, and conversations that answer the query.",
+            )
+        ).strip()
 
     @property
     def topic_tunnel_min_count(self):
@@ -839,6 +880,8 @@ class MempalaceConfig:
             default_config = {
                 "palace_path": DEFAULT_PALACE_PATH,
                 "collection_name": DEFAULT_COLLECTION_NAME,
+                "embedding_model": "default",
+                "embedding_device": "auto",
                 "topic_wings": DEFAULT_TOPIC_WINGS,
                 "hall_keywords": DEFAULT_HALL_KEYWORDS,
             }

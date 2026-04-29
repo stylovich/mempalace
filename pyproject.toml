@@ -104,6 +104,11 @@ spellcheck = ["autocorrect>=2.0"]
 # MEMPALACE_BACKEND=pgvector / --backend pgvector; never required for the
 # default (Chroma) install.
 pgvector = ["psycopg[binary]>=3.1"]
+sentence-transformers = [
+    "sentence-transformers>=3.0",
+    "torch>=2.0",
+    "transformers>=4.51.0",
+]
 # Hardware acceleration for the ONNX embedding model. Install exactly one:
 #   pip install mempalace[gpu]       — NVIDIA CUDA
 #   pip install mempalace[dml]       — DirectML (Windows AMD/Intel/NVIDIA)

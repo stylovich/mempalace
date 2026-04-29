@@ -16,6 +16,12 @@ or ``embedding_model`` in ``~/.mempalace/config.json``:
   on an existing palace requires ``mempalace repair rebuild-index``
   (different vector space).
 
+MemPalace can also use local SentenceTransformer models when
+``embedding_model`` (or ``MEMPALACE_EMBEDDING_MODEL``) is set to a Hugging
+Face model id such as ``Qwen/Qwen3-Embedding-0.6B``. Changing the embedding
+model or dimension requires rebuilding the palace collection; do not mix
+vectors from different models in the same Chroma collection.
+
 Supported devices (env ``MEMPALACE_EMBEDDING_DEVICE`` or ``embedding_device``
 in ``~/.mempalace/config.json``):
 
@@ -35,6 +41,9 @@ import logging
 import os
 import threading
 from typing import Optional
+
+import numpy as np
+from chromadb.api.types import Documents, EmbeddingFunction
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +71,17 @@ _EF_CACHE: dict = {}
 # resolving the same key each keep their own EF instance, and each instance
 # later lazy-loads its own copy of the model.
 _EF_CACHE_LOCK = threading.Lock()
+_ST_MODEL_CACHE: dict = {}
 _WARNED: set = set()
+_DEFAULT_MODEL_NAMES = {
+    "",
+    "default",
+    "minilm",
+    "onnx",
+    "all-minilm-l6-v2",
+    "all_minilm_l6_v2",
+    "onnx_mini_lm_l6_v2",
+}
 
 
 def _resolve_providers(device: str) -> tuple[list, str]:
@@ -220,6 +239,143 @@ _EMBEDDINGGEMMA_MAX_LEN = 2048
 _EMBEDDINGGEMMA_BATCH_SIZE = 32
 
 
+def _resolve_torch_device(device: str) -> str:
+    requested = (device or "auto").strip().lower()
+    if requested in {"cpu", "coreml", "dml"}:
+        return "cpu"
+
+    try:
+        import torch
+
+        cuda_available = torch.cuda.is_available()
+    except Exception:
+        cuda_available = False
+
+    if requested == "cuda":
+        if cuda_available:
+            return "cuda"
+        if requested not in _WARNED:
+            logger.warning(
+                "embedding_device='cuda' requested but torch CUDA is unavailable; using CPU"
+            )
+            _WARNED.add(requested)
+        return "cpu"
+
+    if requested == "auto" and cuda_available:
+        return "cuda"
+    return "cpu"
+
+
+def _as_text_list(input: Documents) -> list[str]:
+    if isinstance(input, str):
+        return [input]
+    return [str(item) for item in input]
+
+
+class _SentenceTransformerEmbeddingFunction(EmbeddingFunction[Documents]):
+    """Chroma embedding function for Hugging Face SentenceTransformer models."""
+
+    def __init__(
+        self,
+        model_name: str,
+        *,
+        device: str = "auto",
+        dimension: Optional[int] = None,
+        query_instruction: str = "",
+    ):
+        self.model_name = model_name
+        self.dimension = dimension
+        self.query_instruction = query_instruction
+        self.device = _resolve_torch_device(device)
+        self._model_cache_key = (model_name, self.device)
+        self._model = None
+
+    def _get_model(self):
+        from sentence_transformers import SentenceTransformer
+
+        cache_key = self._model_cache_key
+        cached = _ST_MODEL_CACHE.get(cache_key)
+        if cached is None:
+            with _EF_CACHE_LOCK:
+                cached = _ST_MODEL_CACHE.get(cache_key)
+                if cached is None:
+                    cached = SentenceTransformer(self.model_name, device=self.device)
+                    _ST_MODEL_CACHE[cache_key] = cached
+        self._model = cached
+        return cached
+
+    @staticmethod
+    def name() -> str:
+        return "mempalace_sentence_transformers"
+
+    def default_space(self):
+        return "cosine"
+
+    def supported_spaces(self):
+        return ["cosine", "l2", "ip"]
+
+    @staticmethod
+    def build_from_config(config):
+        return _SentenceTransformerEmbeddingFunction(**config)
+
+    @staticmethod
+    def validate_config(config):
+        if "model_name" not in config:
+            raise ValueError("model_name is required")
+
+    def get_config(self):
+        return {
+            "model_name": self.model_name,
+            "device": self.device,
+            "dimension": self.dimension,
+            "query_instruction": self.query_instruction,
+        }
+
+    def __call__(self, input: Documents):
+        return self._encode(input, is_query=False)
+
+    def embed_query(self, input: Documents):
+        return self._encode(input, is_query=True)
+
+    def _encode(self, input: Documents, *, is_query: bool):
+        texts = _as_text_list(input)
+        kwargs = {
+            "convert_to_numpy": True,
+            "normalize_embeddings": True,
+            "show_progress_bar": False,
+        }
+        prompt = None
+        if is_query and self.query_instruction:
+            prompt = f"Instruct: {self.query_instruction}\nQuery: "
+
+        if self.dimension is not None:
+            kwargs["truncate_dim"] = self.dimension
+
+        try:
+            vectors = self._get_model().encode(texts, prompt=prompt, **kwargs)
+        except TypeError:
+            kwargs.pop("truncate_dim", None)
+            encoded_texts = [f"{prompt}{text}" for text in texts] if prompt else texts
+            vectors = self._get_model().encode(encoded_texts, **kwargs)
+
+        vectors = np.asarray(vectors, dtype=np.float32)
+        if vectors.ndim == 1:
+            vectors = vectors.reshape(1, -1)
+
+        if self.dimension is not None and vectors.shape[1] != self.dimension:
+            if self.dimension > vectors.shape[1]:
+                raise ValueError(
+                    f"embedding_dimension={self.dimension} exceeds model output "
+                    f"dimension {vectors.shape[1]}"
+                )
+            vectors = vectors[:, : self.dimension]
+            norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+            norms[norms == 0] = 1.0
+            vectors = vectors / norms
+
+        return [row.tolist() for row in vectors]
+
+
 class EmbeddinggemmaONNX:
     """ChromaDB-compatible EF using embeddinggemma-300m ONNX (q8, MRL→384d).
 
@@ -371,14 +527,48 @@ def get_embedding_function(device: Optional[str] = None, model: Optional[str] = 
     if device is None or model is None:
         from .config import MempalaceConfig
 
-        cfg = MempalaceConfig()
+        config = MempalaceConfig()
         if device is None:
-            device = cfg.embedding_device
+            device = config.embedding_device
         if model is None:
-            model = cfg.embedding_model
+            model = config.embedding_model
+    else:
+        config = None
+
+    model_key = str(model or "minilm").strip()
+    model_lower = model_key.lower()
+    if model_lower not in _DEFAULT_MODEL_NAMES and model_lower != "embeddinggemma":
+        if config is None:
+            from .config import MempalaceConfig
+
+            config = MempalaceConfig()
+        dimension = config.embedding_dimension
+        query_instruction = config.embedding_query_instruction
+        cache_key = ("sentence-transformers", model_key, device, dimension, query_instruction)
+        cached = _EF_CACHE.get(cache_key)  # lock-free fast path; dict.get is GIL-atomic
+        if cached is not None:
+            return cached
+        with _EF_CACHE_LOCK:
+            cached = _EF_CACHE.get(cache_key)
+            if cached is not None:
+                return cached
+            ef = _SentenceTransformerEmbeddingFunction(
+                model_key,
+                device=device,
+                dimension=dimension,
+                query_instruction=query_instruction,
+            )
+            _EF_CACHE[cache_key] = ef
+        logger.info(
+            "Embedding function initialized (model=%s device=%s dimension=%s)",
+            model_key,
+            ef.device,
+            dimension or "model-default",
+        )
+        return ef
 
     providers, effective = _resolve_providers(device)
-    cache_key = (model, tuple(providers))
+    cache_key = (model_lower, tuple(providers))
     cached = _EF_CACHE.get(cache_key)  # lock-free fast path; dict.get is GIL-atomic
     if cached is not None:
         return cached
@@ -388,7 +578,7 @@ def get_embedding_function(device: Optional[str] = None, model: Optional[str] = 
             return cached
 
         threads = _resolve_intra_op_threads()
-        if model == "embeddinggemma":
+        if model_lower == "embeddinggemma":
             ef = EmbeddinggemmaONNX(preferred_providers=providers, intra_op_num_threads=threads)
         else:
             # Default: minilm (or anything we don't recognize — back-compat win).
@@ -398,7 +588,7 @@ def get_embedding_function(device: Optional[str] = None, model: Optional[str] = 
         _EF_CACHE[cache_key] = ef
     logger.info(
         "Embedding function initialized (model=%s device=%s providers=%s)",
-        model,
+        model_key,
         effective,
         providers,
     )
@@ -414,7 +604,16 @@ def describe_device(device: Optional[str] = None) -> str:
     if device is None:
         from .config import MempalaceConfig
 
-        device = MempalaceConfig().embedding_device
+        config = MempalaceConfig()
+        device = config.embedding_device
+        model = config.embedding_model
+    else:
+        from .config import MempalaceConfig
+
+        model = MempalaceConfig().embedding_model
+    model_lower = str(model or "minilm").strip().lower()
+    if model_lower not in _DEFAULT_MODEL_NAMES and model_lower != "embeddinggemma":
+        return _resolve_torch_device(device)
     _, effective = _resolve_providers(device)
     return effective
 
@@ -432,7 +631,8 @@ def current_model_name(model: Optional[str] = None) -> str:
     ``name()`` (which is spoofed to ``"default"`` for ChromaDB compatibility).
     """
     if model is not None:
-        return str(model).strip().lower()
+        resolved = str(model).strip()
+        return resolved.lower() if resolved.lower() in _DEFAULT_MODEL_NAMES | {"embeddinggemma"} else resolved
     from .config import MempalaceConfig
 
     return MempalaceConfig().embedding_model

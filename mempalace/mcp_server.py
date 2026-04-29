@@ -965,7 +965,11 @@ def _get_collection(create=False):
                         **ef_kwargs,
                     )
                 _pin_hnsw_threads(raw)
-                _collection_cache = ChromaCollection(raw, palace_path=_config.palace_path)
+                _collection_cache = ChromaCollection(
+                    raw,
+                    palace_path=_config.palace_path,
+                    embedding_function=ef,
+                )
                 _collection_cache_backend = "chroma"
                 _collection_cache_palace = _config.palace_path
                 _collection_open_error = None
@@ -976,7 +980,11 @@ def _get_collection(create=False):
                 ef_kwargs = {"embedding_function": ef} if ef is not None else {}
                 raw = client.get_collection(_config.collection_name, **ef_kwargs)
                 _pin_hnsw_threads(raw)
-                _collection_cache = ChromaCollection(raw, palace_path=_config.palace_path)
+                _collection_cache = ChromaCollection(
+                    raw,
+                    palace_path=_config.palace_path,
+                    embedding_function=ef,
+                )
                 _collection_cache_backend = "chroma"
                 _collection_cache_palace = _config.palace_path
                 _collection_open_error = None

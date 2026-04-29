@@ -1295,9 +1295,15 @@ class ChromaCollection(BaseCollection):
     directly without going through ``ChromaBackend``.
     """
 
-    def __init__(self, collection, palace_path: Optional[str] = None):
+    def __init__(
+        self,
+        collection,
+        palace_path: Optional[str] = None,
+        embedding_function=None,
+    ):
         self._collection = collection
         self._palace_path = palace_path
+        self._embedding_function = embedding_function
 
     @contextlib.contextmanager
     def _write_lock(self):
@@ -1431,6 +1437,15 @@ class ChromaCollection(BaseCollection):
 
         if (query_texts is None) == (query_embeddings is None):
             raise ValueError("query requires exactly one of query_texts or query_embeddings")
+        if query_texts is not None:
+            embed_query = getattr(self._embedding_function, "embed_query", None)
+            if callable(embed_query):
+                query_embeddings = [
+                    row.tolist() if hasattr(row, "tolist") else row
+                    for row in embed_query(query_texts)
+                ]
+                query_texts = None
+
         chosen = query_texts if query_texts is not None else query_embeddings
         if not chosen:
             raise ValueError("query input must be a non-empty list")
@@ -2161,7 +2176,11 @@ class ChromaBackend(BaseBackend):
                     raise ValueError(explanation) from e
                 raise
         _pin_hnsw_threads(collection)
-        return ChromaCollection(collection, palace_path=palace_path)
+        return ChromaCollection(
+            collection,
+            palace_path=palace_path,
+            embedding_function=ef,
+        )
 
     def close_palace(self, palace) -> None:
         """Drop cached handles for ``palace`` and release its SQLite file lock.
@@ -2220,7 +2239,11 @@ class ChromaBackend(BaseBackend):
             },
             **ef_kwargs,
         )
-        return ChromaCollection(collection, palace_path=palace_path)
+        return ChromaCollection(
+            collection,
+            palace_path=palace_path,
+            embedding_function=ef,
+        )
 
 
 def _normalize_get_collection_args(args, kwargs):
