@@ -276,6 +276,11 @@ class _DashboardHandler(BaseHTTPRequestHandler):
         try:
             if path in {"/", "/dashboard"}:
                 self._send_html()
+            elif path == "/favicon.ico":
+                self.send_response(HTTPStatus.NO_CONTENT)
+                self.send_header("Cache-Control", "max-age=86400")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
             elif path == "/api/status":
                 self._send_json(self.app.status())
             elif path == "/api/drawers":
@@ -478,6 +483,9 @@ DASHBOARD_HTML = r"""<!doctype html>
     .item {
       text-align: left;
       width: 100%;
+      min-width: 0;
+      overflow: hidden;
+      white-space: normal;
       background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 7px;
@@ -497,6 +505,9 @@ DASHBOARD_HTML = r"""<!doctype html>
       min-width: 0;
       color: var(--accent);
       font-weight: 650;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     .pill {
       display: inline-flex;
@@ -519,6 +530,10 @@ DASHBOARD_HTML = r"""<!doctype html>
     .preview {
       color: var(--text);
       overflow-wrap: anywhere;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
     }
     .detail {
       display: grid;
@@ -535,11 +550,55 @@ DASHBOARD_HTML = r"""<!doctype html>
       border-bottom: 1px solid var(--line);
     }
     .content {
-      margin: 0;
       padding: 16px;
-      white-space: pre-wrap;
       overflow: auto;
-      font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 14px;
+      line-height: 1.55;
+      overflow-wrap: anywhere;
+    }
+    .content > :first-child { margin-top: 0; }
+    .content > :last-child { margin-bottom: 0; }
+    .content h1, .content h2, .content h3 {
+      margin: 16px 0 8px;
+      line-height: 1.25;
+    }
+    .content h1 { font-size: 20px; }
+    .content h2 { font-size: 17px; }
+    .content h3 { font-size: 15px; }
+    .content p { margin: 0 0 10px; }
+    .content ul, .content ol { margin: 0 0 12px 22px; padding: 0; }
+    .content blockquote {
+      margin: 0 0 12px;
+      padding-left: 12px;
+      border-left: 3px solid var(--line);
+      color: var(--muted);
+    }
+    .content pre {
+      margin: 0 0 12px;
+      padding: 12px;
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      overflow: auto;
+      white-space: pre-wrap;
+    }
+    .content code {
+      font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      padding: 1px 4px;
+    }
+    .content pre code {
+      background: transparent;
+      border: 0;
+      padding: 0;
+    }
+    .content a { color: var(--accent-2); }
+    .content hr {
+      border: 0;
+      border-top: 1px solid var(--line);
+      margin: 16px 0;
     }
     .empty, .error {
       margin: 16px;
@@ -600,7 +659,7 @@ DASHBOARD_HTML = r"""<!doctype html>
         <div class="small muted" id="detailSubtitle">Read-only dashboard</div>
       </header>
       <div class="detail-meta" id="detailMeta"></div>
-      <pre class="content" id="detailContent"></pre>
+      <div class="content" id="detailContent"></div>
     </section>
   </div>
   <script>
@@ -611,6 +670,124 @@ DASHBOARD_HTML = r"""<!doctype html>
       return String(text ?? "").replace(/[&<>"']/g, (ch) => ({
         "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
       }[ch]));
+    }
+
+    function formatDate(value) {
+      if (!value) return "";
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return String(value);
+      return new Intl.DateTimeFormat(undefined, {
+        dateStyle: "medium",
+        timeStyle: "short"
+      }).format(date);
+    }
+
+    function renderInlineMarkdown(text) {
+      let html = escapeHtml(text);
+      html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+      html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+      html = html.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+      html = html.replace(
+        /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
+        '<a href="$2" target="_blank" rel="noreferrer">$1</a>'
+      );
+      return html;
+    }
+
+    function renderMarkdown(text) {
+      const lines = String(text || "").replace(/\r\n/g, "\n").split("\n");
+      const blocks = [];
+      let paragraph = [];
+      let list = [];
+      let listType = null;
+      let quote = [];
+      let code = [];
+      let inCode = false;
+
+      function flushParagraph() {
+        if (paragraph.length) {
+          blocks.push(`<p>${renderInlineMarkdown(paragraph.join(" "))}</p>`);
+          paragraph = [];
+        }
+      }
+      function flushList() {
+        if (list.length) {
+          const tag = listType === "ol" ? "ol" : "ul";
+          blocks.push(`<${tag}>${list.map((item) => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</${tag}>`);
+          list = [];
+          listType = null;
+        }
+      }
+      function flushQuote() {
+        if (quote.length) {
+          blocks.push(`<blockquote>${quote.map((item) => `<p>${renderInlineMarkdown(item)}</p>`).join("")}</blockquote>`);
+          quote = [];
+        }
+      }
+      function flushTextBlocks() {
+        flushParagraph();
+        flushList();
+        flushQuote();
+      }
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith("```")) {
+          if (inCode) {
+            blocks.push(`<pre><code>${escapeHtml(code.join("\n"))}</code></pre>`);
+            code = [];
+            inCode = false;
+          } else {
+            flushTextBlocks();
+            inCode = true;
+          }
+          continue;
+        }
+        if (inCode) {
+          code.push(line);
+          continue;
+        }
+        if (!trimmed) {
+          flushTextBlocks();
+          continue;
+        }
+        const heading = /^(#{1,3})\s+(.+)$/.exec(trimmed);
+        if (heading) {
+          flushTextBlocks();
+          const level = heading[1].length;
+          blocks.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
+          continue;
+        }
+        if (/^---+$/.test(trimmed)) {
+          flushTextBlocks();
+          blocks.push("<hr>");
+          continue;
+        }
+        const bullet = /^[-*]\s+(.+)$/.exec(trimmed);
+        const ordered = /^\d+\.\s+(.+)$/.exec(trimmed);
+        if (bullet || ordered) {
+          flushParagraph();
+          flushQuote();
+          const nextType = ordered ? "ol" : "ul";
+          if (listType && listType !== nextType) flushList();
+          listType = nextType;
+          list.push((bullet || ordered)[1]);
+          continue;
+        }
+        const quoted = /^>\s?(.+)$/.exec(trimmed);
+        if (quoted) {
+          flushParagraph();
+          flushList();
+          quote.push(quoted[1]);
+          continue;
+        }
+        flushList();
+        flushQuote();
+        paragraph.push(trimmed);
+      }
+      if (inCode) blocks.push(`<pre><code>${escapeHtml(code.join("\n"))}</code></pre>`);
+      flushTextBlocks();
+      return blocks.join("\n") || "<p></p>";
     }
 
     async function api(path, options = {}) {
@@ -679,7 +856,7 @@ DASHBOARD_HTML = r"""<!doctype html>
           <div class="path">${escapeHtml(drawer.wing)} <span class="muted">/</span> ${escapeHtml(drawer.room)}</div>
           <div class="meta-row">
             <span class="pill">${escapeHtml(drawer.source_file_name || drawer.source_file || "?")}</span>
-            ${drawer.created_at ? `<span class="pill">${escapeHtml(drawer.created_at)}</span>` : ""}
+            ${drawer.created_at ? `<span class="pill">${escapeHtml(formatDate(drawer.created_at))}</span>` : ""}
             ${drawer.similarity !== undefined ? `<span class="pill">sim ${escapeHtml(drawer.similarity)}</span>` : ""}
           </div>
           <div class="preview">${escapeHtml(drawer.content_preview || drawer.text || "")}</div>
@@ -696,12 +873,12 @@ DASHBOARD_HTML = r"""<!doctype html>
       const meta = drawer.metadata || {};
       const rows = [
         ["source", drawer.source_file || meta.source_file],
-        ["created", drawer.created_at || meta.filed_at],
+        ["created", formatDate(drawer.created_at || meta.filed_at)],
         ["added_by", drawer.added_by || meta.added_by],
         ["chunk", drawer.chunk_index ?? meta.chunk_index],
       ].filter(([, value]) => value !== undefined && value !== null && value !== "");
       $("detailMeta").innerHTML = rows.map(([k, v]) => `<div><span class="muted">${escapeHtml(k)}:</span> ${escapeHtml(v)}</div>`).join("");
-      $("detailContent").textContent = drawer.content || drawer.text || "";
+      $("detailContent").innerHTML = renderMarkdown(drawer.content || drawer.text || "");
       document.querySelectorAll(".item").forEach((el) => el.classList.remove("active"));
     }
 
