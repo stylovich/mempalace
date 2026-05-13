@@ -1,7 +1,7 @@
 from unittest.mock import patch
 
 from mempalace.backends.base import GetResult
-from mempalace.dashboard import DashboardApp, _where_filter
+from mempalace.dashboard import DASHBOARD_HTML, DashboardApp, _where_filter
 
 
 class FakeCollection:
@@ -126,3 +126,9 @@ def test_dashboard_search_delegates_to_search_memories():
         max_distance=1.5,
         collection_name="custom",
     )
+
+
+def test_dashboard_html_supports_markdown_tables_and_pipe_memories():
+    assert "function renderTable" in DASHBOARD_HTML
+    assert "function renderPipeMemory" in DASHBOARD_HTML
+    assert "structured-memory" in DASHBOARD_HTML

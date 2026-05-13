@@ -600,6 +600,51 @@ DASHBOARD_HTML = r"""<!doctype html>
       border-top: 1px solid var(--line);
       margin: 16px 0;
     }
+    .content table {
+      width: 100%;
+      margin: 0 0 12px;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+    .content th, .content td {
+      border: 1px solid var(--line);
+      padding: 6px 8px;
+      text-align: left;
+      vertical-align: top;
+      overflow-wrap: anywhere;
+    }
+    .content th {
+      background: var(--panel-2);
+      color: var(--muted);
+      font-weight: 650;
+    }
+    .structured-memory {
+      display: grid;
+      gap: 2px;
+    }
+    .structured-row {
+      display: grid;
+      grid-template-columns: minmax(92px, 180px) minmax(0, 1fr);
+      gap: 12px;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .structured-row:first-child { padding-top: 0; }
+    .structured-row:last-child {
+      padding-bottom: 0;
+      border-bottom: 0;
+    }
+    .structured-key {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+      overflow-wrap: anywhere;
+    }
+    .structured-value { min-width: 0; }
+    .structured-stars {
+      color: var(--accent);
+      letter-spacing: 1px;
+    }
     .empty, .error {
       margin: 16px;
       padding: 14px;
@@ -622,6 +667,10 @@ DASHBOARD_HTML = r"""<!doctype html>
       .detail {
         position: static;
         max-height: none;
+      }
+      .structured-row {
+        grid-template-columns: 1fr;
+        gap: 2px;
       }
     }
   </style>
@@ -694,8 +743,73 @@ DASHBOARD_HTML = r"""<!doctype html>
       return html;
     }
 
+    function splitTableRow(line) {
+      let normalized = line.trim();
+      if (normalized.startsWith("|")) normalized = normalized.slice(1);
+      if (normalized.endsWith("|")) normalized = normalized.slice(0, -1);
+      return normalized.split("|").map((cell) => cell.trim());
+    }
+
+    function isMarkdownTableSeparator(line) {
+      const cells = splitTableRow(line);
+      return cells.length > 1 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+    }
+
+    function renderTable(headers, rows) {
+      const head = headers.map((cell) => `<th>${renderInlineMarkdown(cell)}</th>`).join("");
+      const body = rows.map((row) => {
+        const cells = headers.map((_, index) => `<td>${renderInlineMarkdown(row[index] || "")}</td>`).join("");
+        return `<tr>${cells}</tr>`;
+      }).join("");
+      return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+    }
+
+    function looksLikePipeMemory(text) {
+      const raw = String(text || "").trim();
+      if (!raw || raw.includes("\n\n")) return false;
+      const parts = raw.split("|").map((part) => part.trim()).filter(Boolean);
+      if (parts.length < 4) return false;
+      const keyed = parts.filter((part) => /^[A-Za-z0-9_.-]{2,48}[:=]/.test(part));
+      return keyed.length >= Math.ceil(parts.length / 2);
+    }
+
+    function splitStructuredPart(part) {
+      const colon = part.indexOf(":");
+      const equals = part.indexOf("=");
+      const candidates = [colon, equals].filter((index) => index > 0);
+      if (!candidates.length) return ["note", part];
+      const splitAt = Math.min(...candidates);
+      if (splitAt > 48) return ["note", part];
+      return [part.slice(0, splitAt), part.slice(splitAt + 1)];
+    }
+
+    function renderPipeMemory(text) {
+      const parts = String(text || "").trim().split("|").map((part) => part.trim()).filter(Boolean);
+      const rows = parts.map((part) => {
+        if (/^[★☆]+$/.test(part)) {
+          return `
+            <div class="structured-row">
+              <div class="structured-key">importance</div>
+              <div class="structured-value structured-stars">${escapeHtml(part)}</div>
+            </div>
+          `;
+        }
+        const [key, value] = splitStructuredPart(part);
+        return `
+          <div class="structured-row">
+            <div class="structured-key">${escapeHtml(key)}</div>
+            <div class="structured-value">${renderInlineMarkdown(value.trim() || part)}</div>
+          </div>
+        `;
+      }).join("");
+      return `<div class="structured-memory">${rows}</div>`;
+    }
+
     function renderMarkdown(text) {
-      const lines = String(text || "").replace(/\r\n/g, "\n").split("\n");
+      const raw = String(text || "").replace(/\r\n/g, "\n");
+      if (looksLikePipeMemory(raw)) return renderPipeMemory(raw);
+
+      const lines = raw.split("\n");
       const blocks = [];
       let paragraph = [];
       let list = [];
@@ -730,7 +844,8 @@ DASHBOARD_HTML = r"""<!doctype html>
         flushQuote();
       }
 
-      for (const line of lines) {
+      for (let index = 0; index < lines.length; index += 1) {
+        const line = lines[index];
         const trimmed = line.trim();
         if (trimmed.startsWith("```")) {
           if (inCode) {
@@ -749,6 +864,19 @@ DASHBOARD_HTML = r"""<!doctype html>
         }
         if (!trimmed) {
           flushTextBlocks();
+          continue;
+        }
+        const nextLine = lines[index + 1]?.trim() || "";
+        if (trimmed.includes("|") && isMarkdownTableSeparator(nextLine)) {
+          flushTextBlocks();
+          const headers = splitTableRow(trimmed);
+          const rows = [];
+          index += 1;
+          while (index + 1 < lines.length && lines[index + 1].trim().includes("|")) {
+            index += 1;
+            rows.push(splitTableRow(lines[index]));
+          }
+          blocks.push(renderTable(headers, rows));
           continue;
         }
         const heading = /^(#{1,3})\s+(.+)$/.exec(trimmed);
