@@ -1007,7 +1007,6 @@ def cmd_status(args):
     palace_path = os.path.expanduser(args.palace) if args.palace else MempalaceConfig().palace_path
     status(palace_path=palace_path)
 
-
 def cmd_palace_set_embedder(args):
     """Record (or force-override) a palace's embedder identity (RFC 001).
 
@@ -1053,6 +1052,18 @@ def cmd_palace_set_embedder(args):
             f"  ⚠ configured model is {configured!r}; set MEMPALACE_EMBEDDING_MODEL="
             f"{new.model_name} (or run onboarding) so normal opens of this palace match."
         )
+
+
+def cmd_dashboard(args):
+    from .dashboard import serve_dashboard
+
+    palace_path = os.path.expanduser(args.palace) if args.palace else MempalaceConfig().palace_path
+    serve_dashboard(
+        palace_path=palace_path,
+        host=args.host,
+        port=args.port,
+        open_browser=not args.no_open,
+    )
 
 
 def cmd_repair_status(args):
@@ -1993,6 +2004,28 @@ def main():
         help="Storage backend (default: config/env/detected/chroma)",
     )
 
+    # dashboard
+    p_dashboard = sub.add_parser(
+        "dashboard",
+        help="Run a local read-only web dashboard for browsing memories",
+    )
+    p_dashboard.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Host to bind (default: 127.0.0.1)",
+    )
+    p_dashboard.add_argument(
+        "--port",
+        type=int,
+        default=8765,
+        help="Port to bind (default: 8765; use 0 for a random free port)",
+    )
+    p_dashboard.add_argument(
+        "--no-open",
+        action="store_true",
+        help="Do not open the dashboard in a browser",
+    )
+
     args = parser.parse_args()
     _apply_backend_arg(args)
 
@@ -2046,6 +2079,7 @@ def main():
         "migrate": cmd_migrate,
         "migrate-wings": cmd_migrate_wings,
         "status": cmd_status,
+        "dashboard": cmd_dashboard,
     }
     dispatch[args.command](args)
 

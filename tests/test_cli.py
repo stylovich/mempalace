@@ -14,6 +14,7 @@ import pytest
 
 from mempalace.cli import (
     cmd_compress,
+    cmd_dashboard,
     cmd_hook,
     cmd_init,
     cmd_instructions,
@@ -113,6 +114,25 @@ def test_cmd_status_custom_palace(mock_config_cls):
 
         expected = os.path.expanduser("~/my_palace")
         mock_miner.status.assert_called_once_with(palace_path=expected)
+
+
+# ── cmd_dashboard ──────────────────────────────────────────────────────
+
+
+@patch("mempalace.cli.MempalaceConfig")
+def test_cmd_dashboard_calls_server(mock_config_cls):
+    mock_config_cls.return_value.palace_path = "/fake/palace"
+    args = argparse.Namespace(palace=None, host="127.0.0.1", port=8765, no_open=True)
+
+    with patch("mempalace.dashboard.serve_dashboard") as mock_serve:
+        cmd_dashboard(args)
+
+    mock_serve.assert_called_once_with(
+        palace_path="/fake/palace",
+        host="127.0.0.1",
+        port=8765,
+        open_browser=False,
+    )
 
 
 # ── cmd_search ─────────────────────────────────────────────────────────

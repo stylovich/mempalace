@@ -273,6 +273,7 @@ No API key is required for the core benchmark path.
 - CLI reference → [mempalaceofficial.com/reference/cli](https://mempalaceofficial.com/reference/cli.html)
 - Python API → [mempalaceofficial.com/reference/python-api](https://mempalaceofficial.com/reference/python-api.html)
 - Configurable embedding models → [docs/CONFIGURABLE_EMBEDDINGS.md](docs/CONFIGURABLE_EMBEDDINGS.md)
+- Local dashboard → [docs/DASHBOARD.md](docs/DASHBOARD.md)
 - Full benchmark methodology → [benchmarks/BENCHMARKS.md](benchmarks/BENCHMARKS.md)
 - Release notes → [CHANGELOG.md](CHANGELOG.md)
 - Corrections and public notices → [docs/HISTORY.md](docs/HISTORY.md)
