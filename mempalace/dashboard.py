@@ -768,19 +768,24 @@ DASHBOARD_HTML = r"""<!doctype html>
       const raw = String(text || "").trim();
       if (!raw || raw.includes("\n\n")) return false;
       const parts = raw.split("|").map((part) => part.trim()).filter(Boolean);
-      if (parts.length < 4) return false;
-      const keyed = parts.filter((part) => /^[A-Za-z0-9_.-]{2,48}[:=]/.test(part));
-      return keyed.length >= Math.ceil(parts.length / 2);
+      if (parts.length < 3) return false;
+      const first = parts[0] || "";
+      const startsWithMemoryTag = /^[A-Z][A-Z0-9_.-]*:\S+/.test(first);
+      const hasImportance = parts.some((part) => /^[★☆]+$/.test(part));
+      const hasCompactKey = parts.some((part) => /^[A-Za-z0-9_.-]{2,48}[:=]/.test(part));
+      return startsWithMemoryTag && (parts.length >= 4 || hasImportance || hasCompactKey);
     }
 
     function splitStructuredPart(part) {
       const colon = part.indexOf(":");
+      if (colon > 0 && colon <= 64) return [part.slice(0, colon), part.slice(colon + 1)];
+
       const equals = part.indexOf("=");
-      const candidates = [colon, equals].filter((index) => index > 0);
-      if (!candidates.length) return ["note", part];
-      const splitAt = Math.min(...candidates);
-      if (splitAt > 48) return ["note", part];
-      return [part.slice(0, splitAt), part.slice(splitAt + 1)];
+      if (equals > 0 && equals <= 48) {
+        const key = part.slice(0, equals);
+        if (/^[A-Za-z0-9_.-]+$/.test(key)) return [key, part.slice(equals + 1)];
+      }
+      return ["note", part];
     }
 
     function renderPipeMemory(text) {
