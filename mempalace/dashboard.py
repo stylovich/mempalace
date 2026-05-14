@@ -1121,6 +1121,7 @@ DASHBOARD_HTML = r"""<!doctype html>
       for (const drawer of drawers) {
         const button = document.createElement("button");
         button.className = "item" + (state.selected === drawer.drawer_id ? " active" : "");
+        button.dataset.drawerId = drawer.drawer_id || "";
         button.innerHTML = `
           <div class="path">${escapeHtml(drawer.wing)} <span class="muted">/</span> ${escapeHtml(drawer.room)}</div>
           <div class="meta-row">
@@ -1133,6 +1134,12 @@ DASHBOARD_HTML = r"""<!doctype html>
         button.addEventListener("click", () => selectDrawer(drawer));
         box.appendChild(button);
       }
+    }
+
+    function syncSelectedItem() {
+      document.querySelectorAll(".item").forEach((el) => {
+        el.classList.toggle("active", el.dataset.drawerId === state.selected);
+      });
     }
 
     function renderDetailActions(drawer) {
@@ -1176,7 +1183,7 @@ DASHBOARD_HTML = r"""<!doctype html>
       $("detailMeta").innerHTML = rows.map(([k, v]) => `<div><span class="muted">${escapeHtml(k)}:</span> ${escapeHtml(v)}</div>`).join("");
       $("detailContent").innerHTML = renderMarkdown(drawer.content || drawer.text || "");
       renderDetailActions(drawer);
-      document.querySelectorAll(".item").forEach((el) => el.classList.remove("active"));
+      syncSelectedItem();
     }
 
     function renderEditForm(drawer) {

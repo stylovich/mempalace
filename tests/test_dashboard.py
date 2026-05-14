@@ -210,3 +210,9 @@ def test_dashboard_html_supports_markdown_tables_and_pipe_memories():
     assert "function renderTable" in DASHBOARD_HTML
     assert "function renderPipeMemory" in DASHBOARD_HTML
     assert "structured-memory" in DASHBOARD_HTML
+
+
+def test_dashboard_html_keeps_selected_item_active():
+    assert "button.dataset.drawerId" in DASHBOARD_HTML
+    assert "function syncSelectedItem" in DASHBOARD_HTML
+    assert 'el.classList.toggle("active", el.dataset.drawerId === state.selected)' in DASHBOARD_HTML
