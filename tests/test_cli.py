@@ -122,7 +122,7 @@ def test_cmd_status_custom_palace(mock_config_cls):
 @patch("mempalace.cli.MempalaceConfig")
 def test_cmd_dashboard_calls_server(mock_config_cls):
     mock_config_cls.return_value.palace_path = "/fake/palace"
-    args = argparse.Namespace(palace=None, host="127.0.0.1", port=8765, no_open=True)
+    args = argparse.Namespace(palace=None, host="127.0.0.1", port=8765, no_open=True, write=False)
 
     with patch("mempalace.dashboard.serve_dashboard") as mock_serve:
         cmd_dashboard(args)
@@ -132,7 +132,19 @@ def test_cmd_dashboard_calls_server(mock_config_cls):
         host="127.0.0.1",
         port=8765,
         open_browser=False,
+        write_enabled=False,
     )
+
+
+@patch("mempalace.cli.MempalaceConfig")
+def test_cmd_dashboard_can_enable_write_mode(mock_config_cls):
+    mock_config_cls.return_value.palace_path = "/fake/palace"
+    args = argparse.Namespace(palace=None, host="127.0.0.1", port=8765, no_open=True, write=True)
+
+    with patch("mempalace.dashboard.serve_dashboard") as mock_serve:
+        cmd_dashboard(args)
+
+    assert mock_serve.call_args.kwargs["write_enabled"] is True
 
 
 # ── cmd_search ─────────────────────────────────────────────────────────

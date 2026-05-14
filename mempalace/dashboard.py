@@ -1,4 +1,4 @@
-"""Local read-only web dashboard for browsing a MemPalace palace."""
+"""Local web dashboard for browsing and optionally editing a MemPalace palace."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from .config import MempalaceConfig
 from .palace import get_collection
@@ -100,9 +100,16 @@ def _drawer_item(drawer_id: str, document: str, metadata: dict | None) -> dict:
 class DashboardApp:
     """Small app object used by the HTTP handler and unit tests."""
 
-    def __init__(self, palace_path: str, collection_name: str | None = None):
+    def __init__(
+        self,
+        palace_path: str,
+        collection_name: str | None = None,
+        *,
+        write_enabled: bool = False,
+    ):
         self.palace_path = os.path.abspath(os.path.expanduser(palace_path))
         self.collection_name = collection_name
+        self.write_enabled = write_enabled
 
     def _collection(self):
         return get_collection(
@@ -141,6 +148,7 @@ class DashboardApp:
         return {
             "palace_path": self.palace_path,
             "collection_name": self.collection_name or MempalaceConfig().collection_name,
+            "write_enabled": self.write_enabled,
             "total_drawers": total,
             "wings": dict(sorted(wings.items())),
             "rooms": dict(sorted(rooms.items())),
@@ -228,6 +236,39 @@ class DashboardApp:
             collection_name=self.collection_name,
         )
 
+    def update_drawer(self, drawer_id: str, payload: dict) -> dict:
+        if not self.write_enabled:
+            raise PermissionError("dashboard is read-only; restart with --write to edit drawers")
+
+        current = self.get_drawer(drawer_id)
+        metadata = dict(current.get("metadata") or {})
+        metadata.pop("source_file_name", None)
+        content = str(payload.get("content", current.get("content") or ""))
+        for field in ("wing", "room", "source_file", "added_by"):
+            if field in payload:
+                value = str(payload.get(field) or "").strip()
+                if value:
+                    metadata[field] = value
+                else:
+                    metadata.pop(field, None)
+
+        if "wing" not in metadata or "room" not in metadata:
+            raise ValueError("wing and room are required")
+
+        self._collection().upsert(
+            ids=[drawer_id],
+            documents=[content],
+            metadatas=[metadata],
+        )
+        return self.get_drawer(drawer_id)
+
+    def delete_drawer(self, drawer_id: str) -> dict:
+        if not self.write_enabled:
+            raise PermissionError("dashboard is read-only; restart with --write to delete drawers")
+        self.get_drawer(drawer_id)
+        self._collection().delete(ids=[drawer_id])
+        return {"deleted": drawer_id}
+
 
 class _DashboardHandler(BaseHTTPRequestHandler):
     server_version = "MemPalaceDashboard/0.1"
@@ -286,12 +327,14 @@ class _DashboardHandler(BaseHTTPRequestHandler):
             elif path == "/api/drawers":
                 self._send_json(self.app.list_drawers(params))
             elif path.startswith("/api/drawers/"):
-                drawer_id = path.rsplit("/", 1)[-1]
+                drawer_id = unquote(path.rsplit("/", 1)[-1])
                 self._send_json(self.app.get_drawer(drawer_id))
             else:
                 self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
         except KeyError:
             self._send_json({"error": "drawer not found"}, HTTPStatus.NOT_FOUND)
+        except PermissionError as exc:
+            self._send_json({"error": str(exc)}, HTTPStatus.FORBIDDEN)
         except Exception as exc:  # noqa: BLE001 - dashboard must report backend errors as JSON
             self._send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
@@ -303,6 +346,40 @@ class _DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json(self.app.search(self._read_json()))
             else:
                 self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+        except Exception as exc:  # noqa: BLE001
+            self._send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def do_PATCH(self) -> None:
+        parsed = urlparse(self.path)
+        path = posixpath.normpath(parsed.path)
+        try:
+            if path.startswith("/api/drawers/"):
+                drawer_id = unquote(path.rsplit("/", 1)[-1])
+                self._send_json(self.app.update_drawer(drawer_id, self._read_json()))
+            else:
+                self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+        except KeyError:
+            self._send_json({"error": "drawer not found"}, HTTPStatus.NOT_FOUND)
+        except PermissionError as exc:
+            self._send_json({"error": str(exc)}, HTTPStatus.FORBIDDEN)
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        except Exception as exc:  # noqa: BLE001
+            self._send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def do_DELETE(self) -> None:
+        parsed = urlparse(self.path)
+        path = posixpath.normpath(parsed.path)
+        try:
+            if path.startswith("/api/drawers/"):
+                drawer_id = unquote(path.rsplit("/", 1)[-1])
+                self._send_json(self.app.delete_drawer(drawer_id))
+            else:
+                self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+        except KeyError:
+            self._send_json({"error": "drawer not found"}, HTTPStatus.NOT_FOUND)
+        except PermissionError as exc:
+            self._send_json({"error": str(exc)}, HTTPStatus.FORBIDDEN)
         except Exception as exc:  # noqa: BLE001
             self._send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
@@ -323,15 +400,21 @@ def serve_dashboard(
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
     open_browser: bool = True,
+    write_enabled: bool = False,
 ) -> None:
     cfg = MempalaceConfig()
     resolved_palace = palace_path or cfg.palace_path
-    app = DashboardApp(resolved_palace, collection_name=collection_name)
+    app = DashboardApp(
+        resolved_palace,
+        collection_name=collection_name,
+        write_enabled=write_enabled,
+    )
     server = DashboardServer((host, port), app)
     url = f"http://{host}:{server.server_port}/"
     print(f"MemPalace dashboard: {url}")
     print(f"Palace: {app.palace_path}")
-    print("Read-only mode. Press Ctrl+C to stop.")
+    mode = "Read-write mode" if write_enabled else "Read-only mode"
+    print(f"{mode}. Press Ctrl+C to stop.")
     if open_browser:
         threading.Timer(0.2, lambda: webbrowser.open(url)).start()
     try:
@@ -474,6 +557,14 @@ DASHBOARD_HTML = r"""<!doctype html>
       color: #fff;
       border-color: var(--accent);
     }
+    button.danger {
+      color: var(--danger);
+      border-color: color-mix(in srgb, var(--danger) 45%, var(--line));
+    }
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.6;
+    }
     button:hover { border-color: var(--accent-2); }
     .list {
       display: grid;
@@ -543,6 +634,18 @@ DASHBOARD_HTML = r"""<!doctype html>
       top: 0;
       border-right: 0;
     }
+    .detail header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: start;
+    }
+    .detail-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
     .detail-meta {
       padding: 12px 16px;
       display: grid;
@@ -599,6 +702,27 @@ DASHBOARD_HTML = r"""<!doctype html>
       border: 0;
       border-top: 1px solid var(--line);
       margin: 16px 0;
+    }
+    .editor {
+      display: grid;
+      gap: 12px;
+    }
+    .editor-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    .editor textarea {
+      min-height: 42vh;
+      resize: vertical;
+      font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    .notice {
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      color: var(--muted);
+      background: var(--panel-2);
     }
     .content table {
       width: 100%;
@@ -672,6 +796,12 @@ DASHBOARD_HTML = r"""<!doctype html>
         grid-template-columns: 1fr;
         gap: 2px;
       }
+      .detail header, .editor-grid {
+        grid-template-columns: 1fr;
+      }
+      .detail-actions {
+        justify-content: flex-start;
+      }
     }
   </style>
 </head>
@@ -704,15 +834,18 @@ DASHBOARD_HTML = r"""<!doctype html>
     </main>
     <section class="detail">
       <header>
-        <h2 id="detailTitle">Select a drawer</h2>
-        <div class="small muted" id="detailSubtitle">Read-only dashboard</div>
+        <div>
+          <h2 id="detailTitle">Select a drawer</h2>
+          <div class="small muted" id="detailSubtitle">Read-only dashboard</div>
+        </div>
+        <div class="detail-actions" id="detailActions"></div>
       </header>
       <div class="detail-meta" id="detailMeta"></div>
       <div class="content" id="detailContent"></div>
     </section>
   </div>
   <script>
-    const state = { status: null, selected: null, mode: "list" };
+    const state = { status: null, selected: null, drawer: null, mode: "list", editing: false };
     const $ = (id) => document.getElementById(id);
 
     function escapeHtml(text) {
@@ -973,6 +1106,9 @@ DASHBOARD_HTML = r"""<!doctype html>
       setOptions($("wingFilter"), Object.entries(status.wings || {}), "All wings");
       setOptions($("addedByFilter"), Object.entries(status.added_by || {}), "Anyone");
       refreshRoomOptions();
+      if (!state.selected) {
+        $("detailSubtitle").textContent = status.write_enabled ? "Read-write dashboard" : "Read-only dashboard";
+      }
     }
 
     function renderResults(drawers) {
@@ -999,8 +1135,35 @@ DASHBOARD_HTML = r"""<!doctype html>
       }
     }
 
+    function renderDetailActions(drawer) {
+      const box = $("detailActions");
+      box.innerHTML = "";
+      if (!drawer?.drawer_id) return;
+      if (!state.status?.write_enabled) {
+        box.innerHTML = '<span class="pill">read-only</span>';
+        return;
+      }
+      if (state.editing) {
+        box.innerHTML = `
+          <button id="cancelEditButton">Cancel</button>
+          <button id="saveEditButton" class="primary">Save</button>
+        `;
+        $("cancelEditButton").addEventListener("click", () => renderDetail(state.drawer));
+        $("saveEditButton").addEventListener("click", saveEdit);
+        return;
+      }
+      box.innerHTML = `
+        <button id="editDrawerButton">Edit</button>
+        <button id="deleteDrawerButton" class="danger">Delete</button>
+      `;
+      $("editDrawerButton").addEventListener("click", () => renderEditForm(drawer));
+      $("deleteDrawerButton").addEventListener("click", deleteDrawer);
+    }
+
     function renderDetail(drawer) {
+      state.drawer = drawer;
       state.selected = drawer.drawer_id;
+      state.editing = false;
       $("detailTitle").textContent = `${drawer.wing || "unknown"} / ${drawer.room || "unknown"}`;
       $("detailSubtitle").textContent = drawer.drawer_id || "";
       const meta = drawer.metadata || {};
@@ -1012,7 +1175,88 @@ DASHBOARD_HTML = r"""<!doctype html>
       ].filter(([, value]) => value !== undefined && value !== null && value !== "");
       $("detailMeta").innerHTML = rows.map(([k, v]) => `<div><span class="muted">${escapeHtml(k)}:</span> ${escapeHtml(v)}</div>`).join("");
       $("detailContent").innerHTML = renderMarkdown(drawer.content || drawer.text || "");
+      renderDetailActions(drawer);
       document.querySelectorAll(".item").forEach((el) => el.classList.remove("active"));
+    }
+
+    function renderEditForm(drawer) {
+      state.drawer = drawer;
+      state.editing = true;
+      const meta = drawer.metadata || {};
+      $("detailSubtitle").textContent = `${drawer.drawer_id || ""} · editing`;
+      $("detailMeta").innerHTML = '<div class="notice">Saving rewrites the drawer and regenerates its embedding.</div>';
+      $("detailContent").innerHTML = `
+        <form class="editor" id="editForm">
+          <div class="editor-grid">
+            <label>Wing<input id="editWing" value="${escapeHtml(drawer.wing || meta.wing || "")}" /></label>
+            <label>Room<input id="editRoom" value="${escapeHtml(drawer.room || meta.room || "")}" /></label>
+            <label>Source<input id="editSource" value="${escapeHtml(drawer.source_file || meta.source_file || "")}" /></label>
+            <label>Added by<input id="editAddedBy" value="${escapeHtml(drawer.added_by || meta.added_by || "")}" /></label>
+          </div>
+          <label>Content<textarea id="editContent">${escapeHtml(drawer.content || drawer.text || "")}</textarea></label>
+        </form>
+      `;
+      $("editForm").addEventListener("submit", (event) => {
+        event.preventDefault();
+        saveEdit();
+      });
+      renderDetailActions(drawer);
+    }
+
+    function editPayload() {
+      return {
+        wing: $("editWing").value.trim(),
+        room: $("editRoom").value.trim(),
+        source_file: $("editSource").value.trim(),
+        added_by: $("editAddedBy").value.trim(),
+        content: $("editContent").value,
+      };
+    }
+
+    async function saveEdit() {
+      const drawer = state.drawer;
+      if (!drawer?.drawer_id) return;
+      const saveButton = $("saveEditButton");
+      if (saveButton) saveButton.disabled = true;
+      try {
+        const updated = await api(`/api/drawers/${encodeURIComponent(drawer.drawer_id)}`, {
+          method: "PATCH",
+          body: JSON.stringify(editPayload()),
+        });
+        await refreshStatusOnly();
+        renderDetail(updated);
+        if (state.mode === "search" && $("searchInput").value.trim()) {
+          await runSearch();
+        } else {
+          await loadList();
+        }
+      } catch (err) {
+        $("detailMeta").innerHTML = `<div class="error">${escapeHtml(err.message)}</div>`;
+      } finally {
+        if (saveButton) saveButton.disabled = false;
+      }
+    }
+
+    async function deleteDrawer() {
+      const drawer = state.drawer;
+      if (!drawer?.drawer_id) return;
+      const label = `${drawer.wing || "unknown"} / ${drawer.room || "unknown"}`;
+      if (!window.confirm(`Delete drawer "${label}"?\n\n${drawer.drawer_id}`)) return;
+      try {
+        await api(`/api/drawers/${encodeURIComponent(drawer.drawer_id)}`, { method: "DELETE" });
+        state.selected = null;
+        state.drawer = null;
+        state.editing = false;
+        $("detailTitle").textContent = "Select a drawer";
+        $("detailSubtitle").textContent = state.status?.write_enabled ? "Read-write dashboard" : "Read-only dashboard";
+        $("detailActions").innerHTML = "";
+        $("detailMeta").innerHTML = "";
+        $("detailContent").innerHTML = "";
+        await refreshStatusOnly();
+        await loadList();
+      } catch (err) {
+        $("detailMeta").innerHTML = `<div class="error">${escapeHtml(err.message)}</div>`;
+      }
     }
 
     async function selectDrawer(drawer) {
@@ -1034,6 +1278,11 @@ DASHBOARD_HTML = r"""<!doctype html>
       } catch (err) {
         $("results").innerHTML = `<div class="error">${escapeHtml(err.message)}</div>`;
       }
+    }
+
+    async function refreshStatusOnly() {
+      const status = await api("/api/status");
+      renderStatus(status);
     }
 
     async function runSearch() {
@@ -1063,8 +1312,7 @@ DASHBOARD_HTML = r"""<!doctype html>
     }
 
     async function boot() {
-      const status = await api("/api/status");
-      renderStatus(status);
+      await refreshStatusOnly();
       await loadList();
     }
 

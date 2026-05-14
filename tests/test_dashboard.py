@@ -43,6 +43,12 @@ class FakeCollection:
             )
         return self.rows
 
+    def upsert(self, **kwargs):
+        self.calls.append(("upsert", kwargs))
+
+    def delete(self, **kwargs):
+        self.calls.append(("delete", kwargs))
+
 
 def test_where_filter_combines_optional_filters():
     assert _where_filter() == {}
@@ -100,6 +106,78 @@ def test_dashboard_get_drawer_returns_full_drawer():
     assert drawer["drawer_id"] == "drawer_a"
     assert drawer["content"] == "Alpha memory text"
     assert drawer["metadata"]["source_file_name"] == "auth.py"
+
+
+def test_dashboard_status_exposes_write_mode():
+    fake = FakeCollection()
+    app = DashboardApp("/tmp/palace", write_enabled=True)
+
+    with patch("mempalace.dashboard.get_collection", return_value=fake):
+        status = app.status()
+
+    assert status["write_enabled"] is True
+
+
+def test_dashboard_update_requires_write_mode():
+    app = DashboardApp("/tmp/palace")
+
+    with patch("mempalace.dashboard.get_collection", return_value=FakeCollection()):
+        try:
+            app.update_drawer("drawer_a", {"content": "Updated"})
+        except PermissionError as exc:
+            assert "read-only" in str(exc)
+        else:
+            raise AssertionError("update should require write mode")
+
+
+def test_dashboard_update_upserts_content_and_metadata():
+    fake = FakeCollection()
+    app = DashboardApp("/tmp/palace", write_enabled=True)
+
+    with patch("mempalace.dashboard.get_collection", return_value=fake):
+        app.update_drawer(
+            "drawer_a",
+            {
+                "content": "Updated memory text",
+                "wing": "new-wing",
+                "room": "new-room",
+                "source_file": "/tmp/new.md",
+                "added_by": "tester",
+            },
+        )
+
+    _, kwargs = fake.calls[-2]
+    assert kwargs["ids"] == ["drawer_a"]
+    assert kwargs["documents"] == ["Updated memory text"]
+    assert kwargs["metadatas"][0]["wing"] == "new-wing"
+    assert kwargs["metadatas"][0]["room"] == "new-room"
+    assert kwargs["metadatas"][0]["source_file"] == "/tmp/new.md"
+    assert kwargs["metadatas"][0]["added_by"] == "tester"
+    assert kwargs["metadatas"][0]["filed_at"] == "2026-05-01T00:00:00"
+    assert "source_file_name" not in kwargs["metadatas"][0]
+
+
+def test_dashboard_delete_requires_write_mode():
+    app = DashboardApp("/tmp/palace")
+
+    with patch("mempalace.dashboard.get_collection", return_value=FakeCollection()):
+        try:
+            app.delete_drawer("drawer_a")
+        except PermissionError as exc:
+            assert "read-only" in str(exc)
+        else:
+            raise AssertionError("delete should require write mode")
+
+
+def test_dashboard_delete_removes_existing_drawer():
+    fake = FakeCollection()
+    app = DashboardApp("/tmp/palace", write_enabled=True)
+
+    with patch("mempalace.dashboard.get_collection", return_value=fake):
+        result = app.delete_drawer("drawer_a")
+
+    assert result == {"deleted": "drawer_a"}
+    assert fake.calls[-1] == ("delete", {"ids": ["drawer_a"]})
 
 
 def test_dashboard_search_delegates_to_search_memories():

@@ -1063,6 +1063,7 @@ def cmd_dashboard(args):
         host=args.host,
         port=args.port,
         open_browser=not args.no_open,
+        write_enabled=getattr(args, "write", False),
     )
 
 
@@ -2007,7 +2008,7 @@ def main():
     # dashboard
     p_dashboard = sub.add_parser(
         "dashboard",
-        help="Run a local read-only web dashboard for browsing memories",
+        help="Run a local web dashboard for browsing memories",
     )
     p_dashboard.add_argument(
         "--host",
@@ -2024,6 +2025,11 @@ def main():
         "--no-open",
         action="store_true",
         help="Do not open the dashboard in a browser",
+    )
+    p_dashboard.add_argument(
+        "--write",
+        action="store_true",
+        help="Enable editing and deleting drawers from the dashboard",
     )
 
     args = parser.parse_args()

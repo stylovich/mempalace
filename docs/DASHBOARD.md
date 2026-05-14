@@ -1,8 +1,9 @@
 # Local Dashboard
 
-MemPalace includes a read-only local web dashboard for inspecting memories.
-It runs on your machine, binds to `127.0.0.1` by default, and does not add,
-edit, or delete drawers.
+MemPalace includes a local web dashboard for inspecting memories. It runs on
+your machine and binds to `127.0.0.1` by default.
+
+The dashboard is read-only unless you explicitly start it with `--write`.
 
 ## Start
 
@@ -28,6 +29,12 @@ Run without opening a browser:
 mempalace dashboard --no-open
 ```
 
+Enable editing and deletion:
+
+```bash
+mempalace dashboard --write
+```
+
 Use a custom palace:
 
 ```bash
@@ -40,11 +47,16 @@ mempalace --palace /path/to/palace dashboard
 - Drawer browser with filters for wing, room, author, and literal text.
 - Semantic search using the configured embedding model.
 - Detail panel with full drawer content and metadata.
+- Optional `--write` mode for editing drawer metadata/content and deleting
+  drawers.
 
 ## Safety
 
-The dashboard is read-only. It uses the same collection access path as the CLI
-and MCP server, so it honors the active MemPalace config, including custom
+The dashboard is read-only by default. Edit and delete endpoints return `403`
+unless the server was started with `--write`.
+
+In write mode, editing a drawer rewrites the document through ChromaDB so the
+embedding is regenerated with the active MemPalace config, including custom
 embedding model settings such as `Qwen/Qwen3-Embedding-0.6B`.
 
 The server is intended for local use. Keep the default `--host 127.0.0.1`
