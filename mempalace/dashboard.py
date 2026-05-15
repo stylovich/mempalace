@@ -901,15 +901,45 @@ DASHBOARD_HTML = r"""<!doctype html>
       const raw = String(text || "").trim();
       if (!raw || raw.includes("\n\n")) return false;
       const parts = raw.split("|").map((part) => part.trim()).filter(Boolean);
-      if (parts.length < 3) return false;
+      if (parts.length < 2) return false;
       const first = parts[0] || "";
       const startsWithMemoryTag = /^[A-Z][A-Z0-9_.-]*:\S+/.test(first);
+      const startsWithDate = /^\d{4}-\d{2}-\d{2}$/.test(first);
       const hasImportance = parts.some((part) => /^[★☆]+$/.test(part));
       const hasCompactKey = parts.some((part) => /^[A-Za-z0-9_.-]{2,48}[:=]/.test(part));
+      if (startsWithDate) return parts.length >= 2;
       return startsWithMemoryTag && (parts.length >= 4 || hasImportance || hasCompactKey);
     }
 
+    function splitEmbeddedSections(part) {
+      const matches = [...part.matchAll(/(^|[.;]\s+)([A-Z][A-Za-z0-9/_+@.-]*(?:\s+[A-Za-z0-9/_+@.-]+){0,5}):\s*/g)];
+      if (!matches.length) return [part];
+      const sections = [];
+      const firstLabelStart = matches[0].index + matches[0][1].length;
+      const preamble = part.slice(0, firstLabelStart).replace(/[.;]\s*$/, "").trim();
+      if (preamble) sections.push(`summary:${preamble}`);
+      for (let index = 0; index < matches.length; index += 1) {
+        const match = matches[index];
+        const valueStart = match.index + match[0].length;
+        const valueEnd = index + 1 < matches.length
+          ? matches[index + 1].index
+          : part.length;
+        const value = part.slice(valueStart, valueEnd).replace(/[.;]\s*$/, "").trim();
+        sections.push(`${match[2]}:${value}`);
+      }
+      return sections;
+    }
+
+    function expandStructuredParts(parts) {
+      return parts.flatMap((part) => {
+        if (/^\d{4}-\d{2}-\d{2}$/.test(part) || /^[★☆]+$/.test(part)) return [part];
+        return splitEmbeddedSections(part);
+      });
+    }
+
     function splitStructuredPart(part) {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(part)) return ["date", part];
+
       const colon = part.indexOf(":");
       if (colon > 0 && colon <= 64) return [part.slice(0, colon), part.slice(colon + 1)];
 
@@ -922,7 +952,9 @@ DASHBOARD_HTML = r"""<!doctype html>
     }
 
     function renderPipeMemory(text) {
-      const parts = String(text || "").trim().split("|").map((part) => part.trim()).filter(Boolean);
+      const parts = expandStructuredParts(
+        String(text || "").trim().split("|").map((part) => part.trim()).filter(Boolean)
+      );
       const rows = parts.map((part) => {
         if (/^[★☆]+$/.test(part)) {
           return `

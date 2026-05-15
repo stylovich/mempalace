@@ -209,6 +209,10 @@ def test_dashboard_search_delegates_to_search_memories():
 def test_dashboard_html_supports_markdown_tables_and_pipe_memories():
     assert "function renderTable" in DASHBOARD_HTML
     assert "function renderPipeMemory" in DASHBOARD_HTML
+    assert "function splitEmbeddedSections" in DASHBOARD_HTML
+    assert "function expandStructuredParts" in DASHBOARD_HTML
+    assert "startsWithDate" in DASHBOARD_HTML
+    assert 'return ["date", part]' in DASHBOARD_HTML
     assert "structured-memory" in DASHBOARD_HTML
 
 
