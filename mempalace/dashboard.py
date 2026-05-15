@@ -482,6 +482,13 @@ DASHBOARD_HTML = r"""<!doctype html>
     aside, .detail {
       background: var(--panel);
     }
+    aside {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      align-self: start;
+      overflow: auto;
+    }
     header {
       padding: 16px;
       border-bottom: 1px solid var(--line);
@@ -787,6 +794,11 @@ DASHBOARD_HTML = r"""<!doctype html>
       aside, main, .detail {
         border-right: 0;
         border-bottom: 1px solid var(--line);
+      }
+      aside {
+        position: static;
+        height: auto;
+        overflow: visible;
       }
       .detail {
         position: static;

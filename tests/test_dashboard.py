@@ -220,3 +220,9 @@ def test_dashboard_html_keeps_selected_item_active():
     assert "button.dataset.drawerId" in DASHBOARD_HTML
     assert "function syncSelectedItem" in DASHBOARD_HTML
     assert 'el.classList.toggle("active", el.dataset.drawerId === state.selected)' in DASHBOARD_HTML
+
+
+def test_dashboard_html_keeps_filter_sidebar_visible():
+    assert "position: sticky;" in DASHBOARD_HTML
+    assert "height: 100vh;" in DASHBOARD_HTML
+    assert "overflow: auto;" in DASHBOARD_HTML
