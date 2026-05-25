@@ -1,7 +1,10 @@
+import errno
 from unittest.mock import patch
 
+import pytest
+
 from mempalace.backends.base import GetResult
-from mempalace.dashboard import DASHBOARD_HTML, DashboardApp, _where_filter
+from mempalace.dashboard import DASHBOARD_HTML, DashboardApp, serve_dashboard, stop_dashboard, _where_filter
 
 
 class FakeCollection:
@@ -226,3 +229,41 @@ def test_dashboard_html_keeps_filter_sidebar_visible():
     assert "position: sticky;" in DASHBOARD_HTML
     assert "height: 100vh;" in DASHBOARD_HTML
     assert "overflow: auto;" in DASHBOARD_HTML
+
+
+def test_serve_dashboard_reports_busy_port_without_traceback():
+    with patch("mempalace.dashboard.DashboardServer", side_effect=OSError(errno.EADDRINUSE, "busy")):
+        with pytest.raises(SystemExit) as exc:
+            serve_dashboard(
+                palace_path="/fake/palace",
+                host="127.0.0.1",
+                port=8765,
+                open_browser=False,
+            )
+
+    message = str(exc.value)
+    assert "Dashboard address already in use: 127.0.0.1:8765" in message
+    assert "--port 0" in message
+
+
+def test_stop_dashboard_reports_missing_process():
+    with patch("mempalace.dashboard._find_dashboard_pid", return_value=(None, None)):
+        with pytest.raises(SystemExit) as exc:
+            stop_dashboard(host="127.0.0.1", port=8765)
+
+    assert "No MemPalace dashboard appears to be running on 127.0.0.1:8765" in str(exc.value)
+
+
+def test_stop_dashboard_sends_sigterm_to_pid(tmp_path):
+    pid_path = tmp_path / "dashboard.pid"
+    pid_path.write_text("123\n", encoding="utf-8")
+
+    with (
+        patch("mempalace.dashboard._find_dashboard_pid", return_value=(123, pid_path)),
+        patch("mempalace.dashboard.os.kill") as kill,
+        patch("mempalace.dashboard._process_exists", return_value=False),
+    ):
+        assert stop_dashboard(host="127.0.0.1", port=8765) is True
+
+    kill.assert_called_once()
+    assert not pid_path.exists()

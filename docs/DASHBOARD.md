@@ -35,6 +35,18 @@ Enable editing and deletion:
 mempalace dashboard --write
 ```
 
+Stop the dashboard:
+
+```bash
+mempalace dashboard --stop
+```
+
+Restart it, for example to switch from read-only to write mode:
+
+```bash
+mempalace dashboard --restart --write
+```
+
 Use a custom palace:
 
 ```bash
@@ -61,3 +73,7 @@ embedding model settings such as `Qwen/Qwen3-Embedding-0.6B`.
 
 The server is intended for local use. Keep the default `--host 127.0.0.1`
 unless you have added your own network access controls.
+
+If the default port is already in use, the dashboard is already running. Stop
+it with `mempalace dashboard --stop`, restart it with
+`mempalace dashboard --restart`, or choose a different port with `--port`.

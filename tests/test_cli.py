@@ -139,11 +139,65 @@ def test_cmd_dashboard_calls_server(mock_config_cls):
 @patch("mempalace.cli.MempalaceConfig")
 def test_cmd_dashboard_can_enable_write_mode(mock_config_cls):
     mock_config_cls.return_value.palace_path = "/fake/palace"
-    args = argparse.Namespace(palace=None, host="127.0.0.1", port=8765, no_open=True, write=True)
+    args = argparse.Namespace(
+        palace=None,
+        host="127.0.0.1",
+        port=8765,
+        no_open=True,
+        write=True,
+        stop=False,
+        restart=False,
+    )
 
     with patch("mempalace.dashboard.serve_dashboard") as mock_serve:
         cmd_dashboard(args)
 
+    assert mock_serve.call_args.kwargs["write_enabled"] is True
+
+
+@patch("mempalace.cli.MempalaceConfig")
+def test_cmd_dashboard_can_stop_running_server(mock_config_cls):
+    mock_config_cls.return_value.palace_path = "/fake/palace"
+    args = argparse.Namespace(
+        palace=None,
+        host="127.0.0.1",
+        port=8765,
+        no_open=True,
+        write=False,
+        stop=True,
+        restart=False,
+    )
+
+    with (
+        patch("mempalace.dashboard.stop_dashboard") as mock_stop,
+        patch("mempalace.dashboard.serve_dashboard") as mock_serve,
+    ):
+        cmd_dashboard(args)
+
+    mock_stop.assert_called_once_with(host="127.0.0.1", port=8765)
+    mock_serve.assert_not_called()
+
+
+@patch("mempalace.cli.MempalaceConfig")
+def test_cmd_dashboard_can_restart_running_server(mock_config_cls):
+    mock_config_cls.return_value.palace_path = "/fake/palace"
+    args = argparse.Namespace(
+        palace=None,
+        host="127.0.0.1",
+        port=8765,
+        no_open=True,
+        write=True,
+        stop=False,
+        restart=True,
+    )
+
+    with (
+        patch("mempalace.dashboard.stop_dashboard") as mock_stop,
+        patch("mempalace.dashboard.serve_dashboard") as mock_serve,
+    ):
+        cmd_dashboard(args)
+
+    mock_stop.assert_called_once_with(host="127.0.0.1", port=8765, missing_ok=True)
     assert mock_serve.call_args.kwargs["write_enabled"] is True
 
 

@@ -1055,9 +1055,14 @@ def cmd_palace_set_embedder(args):
 
 
 def cmd_dashboard(args):
-    from .dashboard import serve_dashboard
+    from .dashboard import serve_dashboard, stop_dashboard
 
     palace_path = os.path.expanduser(args.palace) if args.palace else MempalaceConfig().palace_path
+    if getattr(args, "stop", False):
+        stop_dashboard(host=args.host, port=args.port)
+        return
+    if getattr(args, "restart", False):
+        stop_dashboard(host=args.host, port=args.port, missing_ok=True)
     serve_dashboard(
         palace_path=palace_path,
         host=args.host,
@@ -2030,6 +2035,17 @@ def main():
         "--write",
         action="store_true",
         help="Enable editing and deleting drawers from the dashboard",
+    )
+    dashboard_control = p_dashboard.add_mutually_exclusive_group()
+    dashboard_control.add_argument(
+        "--stop",
+        action="store_true",
+        help="Stop the dashboard running on the selected host and port",
+    )
+    dashboard_control.add_argument(
+        "--restart",
+        action="store_true",
+        help="Stop any dashboard on the selected host and port before starting",
     )
 
     args = parser.parse_args()

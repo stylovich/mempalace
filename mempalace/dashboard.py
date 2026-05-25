@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import posixpath
+import signal
+import stat
+import tempfile
 import threading
+import time
 import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -21,6 +26,152 @@ from .searcher import search_memories
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 MAX_LIMIT = 200
+
+
+def _safe_pid_name(host: str, port: int) -> str:
+    safe_host = "".join(char if char.isalnum() or char in "._-" else "_" for char in host)
+    return f"dashboard-{safe_host}-{port}.pid"
+
+
+def _dashboard_pid_path(host: str, port: int) -> Path:
+    runtime_root = os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()
+    return Path(runtime_root) / f"mempalace-{os.getuid()}" / _safe_pid_name(host, port)
+
+
+def _read_pid(path: Path) -> int | None:
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+        return int(raw) if raw else None
+    except (OSError, ValueError):
+        return None
+
+
+def _process_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _process_cmdline(pid: int) -> str:
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return ""
+    return raw.replace(b"\0", b" ").decode(errors="replace")
+
+
+def _looks_like_dashboard_process(pid: int) -> bool:
+    cmdline = _process_cmdline(pid)
+    if not cmdline:
+        return True
+    return "mempalace" in cmdline and "dashboard" in cmdline
+
+
+def _listening_socket_inodes(port: int) -> set[str]:
+    inodes: set[str] = set()
+    wanted_port = f"{port:04X}"
+    for proc_file in (Path("/proc/net/tcp"), Path("/proc/net/tcp6")):
+        try:
+            lines = proc_file.read_text(encoding="utf-8").splitlines()[1:]
+        except OSError:
+            continue
+        for line in lines:
+            fields = line.split()
+            if len(fields) < 10:
+                continue
+            local_address = fields[1]
+            state = fields[3]
+            inode = fields[9]
+            if state == "0A" and local_address.rsplit(":", 1)[-1].upper() == wanted_port:
+                inodes.add(inode)
+    return inodes
+
+
+def _pid_listening_on_port(port: int) -> int | None:
+    inodes = _listening_socket_inodes(port)
+    if not inodes:
+        return None
+    proc_root = Path("/proc")
+    try:
+        pid_dirs = [path for path in proc_root.iterdir() if path.name.isdigit()]
+    except OSError:
+        return None
+    for pid_dir in pid_dirs:
+        pid = int(pid_dir.name)
+        fd_dir = pid_dir / "fd"
+        try:
+            fds = list(fd_dir.iterdir())
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                target = os.readlink(fd)
+            except OSError:
+                continue
+            if target.startswith("socket:[") and target[8:-1] in inodes and _looks_like_dashboard_process(pid):
+                return pid
+    return None
+
+
+def _find_dashboard_pid(host: str, port: int) -> tuple[int | None, Path]:
+    pid_path = _dashboard_pid_path(host, port)
+    pid = _read_pid(pid_path)
+    if pid and _process_exists(pid) and _looks_like_dashboard_process(pid):
+        return pid, pid_path
+    if pid_path.exists():
+        pid_path.unlink(missing_ok=True)
+    return _pid_listening_on_port(port), pid_path
+
+
+def _write_dashboard_pid(host: str, port: int) -> Path:
+    pid_path = _dashboard_pid_path(host, port)
+    pid_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    pid_path.write_text(f"{os.getpid()}\n", encoding="utf-8")
+    try:
+        pid_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    except OSError:
+        pass
+    return pid_path
+
+
+def stop_dashboard(
+    *,
+    host: str = DEFAULT_HOST,
+    port: int = DEFAULT_PORT,
+    missing_ok: bool = False,
+    timeout: float = 5.0,
+) -> bool:
+    if port == 0:
+        raise SystemExit("Cannot stop dashboard with --port 0; pass the concrete port to stop.")
+    pid, pid_path = _find_dashboard_pid(host, port)
+    if pid is None:
+        message = f"No MemPalace dashboard appears to be running on {host}:{port}."
+        if missing_ok:
+            print(message)
+            return False
+        raise SystemExit(message)
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pid_path.unlink(missing_ok=True)
+        print(f"No MemPalace dashboard appears to be running on {host}:{port}.")
+        return False
+    except PermissionError as exc:
+        raise SystemExit(f"Cannot stop dashboard process {pid}: permission denied.") from exc
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _process_exists(pid):
+            pid_path.unlink(missing_ok=True)
+            print(f"Stopped MemPalace dashboard on {host}:{port} (pid {pid}).")
+            return True
+        time.sleep(0.1)
+
+    raise SystemExit(f"Sent stop signal to dashboard process {pid}, but it is still running.")
 
 
 def _as_int(raw: str | None, default: int, minimum: int = 0, maximum: int | None = None) -> int:
@@ -409,20 +560,45 @@ def serve_dashboard(
         collection_name=collection_name,
         write_enabled=write_enabled,
     )
-    server = DashboardServer((host, port), app)
+    try:
+        server = DashboardServer((host, port), app)
+    except OSError as exc:
+        if exc.errno == errno.EADDRINUSE:
+            raise SystemExit(
+                f"Dashboard address already in use: {host}:{port}. "
+                "Stop it with `mempalace dashboard --stop`, then start it again. "
+                "To run a second dashboard, pass --port 0 "
+                "or choose another --port."
+            ) from exc
+        raise
     url = f"http://{host}:{server.server_port}/"
+    pid_path = _write_dashboard_pid(host, server.server_port)
     print(f"MemPalace dashboard: {url}")
     print(f"Palace: {app.palace_path}")
     mode = "Read-write mode" if write_enabled else "Read-only mode"
     print(f"{mode}. Press Ctrl+C to stop.")
     if open_browser:
         threading.Timer(0.2, lambda: webbrowser.open(url)).start()
+    previous_sigterm = None
+
+    def _handle_sigterm(signum, frame):  # noqa: ARG001
+        raise KeyboardInterrupt
+
+    try:
+        previous_sigterm = signal.getsignal(signal.SIGTERM)
+        signal.signal(signal.SIGTERM, _handle_sigterm)
+    except ValueError:
+        previous_sigterm = None
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nStopping dashboard.")
     finally:
+        if previous_sigterm is not None:
+            signal.signal(signal.SIGTERM, previous_sigterm)
         server.server_close()
+        if _read_pid(pid_path) == os.getpid():
+            pid_path.unlink(missing_ok=True)
 
 
 DASHBOARD_HTML = r"""<!doctype html>
