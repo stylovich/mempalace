@@ -537,6 +537,15 @@ class TestHandleRequest:
         assert "mempalace_search" in names
         assert "mempalace_add_drawer" in names
         assert "mempalace_kg_add" in names
+        disallowed_top_level_schema_keys = {"anyOf", "oneOf", "allOf", "enum", "not"}
+        for tool in tools:
+            schema = tool["inputSchema"]
+            assert schema.get("type") == "object", tool["name"]
+            assert disallowed_top_level_schema_keys.isdisjoint(schema), tool["name"]
+
+        diary_schema = next(t["inputSchema"] for t in tools if t["name"] == "mempalace_diary_write")
+        assert "content" in diary_schema["properties"]
+        assert diary_schema["required"] == ["agent_name"]
 
     def test_no_tool_schema_uses_top_level_combinator(self):
         """Anthropic's Messages API rejects a tool whose input schema has a

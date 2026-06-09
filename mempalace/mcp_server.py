@@ -4062,8 +4062,10 @@ TOOLS = {
                 },
             },
             # 'entry' (or its alias 'content') is enforced at dispatch, not via a
-            # top-level anyOf: Anthropic rejects schemas with a top-level
-            # anyOf/oneOf/allOf and drops the whole tools array (400).
+            # top-level anyOf: Anthropic and some OpenAI-compatible adapters
+            # reject tool schemas with top-level anyOf/oneOf/allOf. The
+            # dispatcher still accepts the content alias and the handler
+            # signature reports a missing entry when neither is passed.
             "required": ["agent_name"],
         },
         "handler": tool_diary_write,
